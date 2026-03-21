@@ -89,49 +89,115 @@ with tab_habit:
 # ==========================================
 # TAB 2: FINANCE MANAGER
 # ==========================================
+# ==========================================
+# TAB 2: FINANCE MANAGER (Nâng cấp)
+# ==========================================
 with tab_finance:
     accounts = supabase.table("accounts").select("*").eq("user_id", USER_ID).execute().data
+    
+    # --- THANH NGÂN SÁCH (BUDGET BAR) ---
+    st.write("### 🎯 Ngân sách tháng này")
+    # Lấy ngân sách từ settings
+    settings = supabase.table("user_settings").select("monthly_budget").eq("user_id", USER_ID).execute().data
+    budget = float(settings[0]['monthly_budget']) if settings else 3000000.0
+    
+    # Tính tổng chi tiêu tháng hiện tại
+    current_month = datetime.now().strftime("%Y-%m-01")
+    expenses_this_month = supabase.table("transactions").select("amount")\
+        .eq("user_id", USER_ID).eq("transaction_type", "expense").gte("created_at", current_month).execute().data
+    
+    total_spent = sum([e['amount'] for e in expenses_this_month]) if expenses_this_month else 0
+    
+    # Vẽ thanh tiến trình
+    progress_pct = min(total_spent / budget, 1.0)
+    
+    c_bud1, c_bud2 = st.columns([3, 1])
+    c_bud1.progress(progress_pct, text=f"Đã tiêu: {total_spent:,.0f} / {budget:,.0f} VNĐ")
+    
+    if progress_pct < 0.5:
+        c_bud2.success("An toàn! 🟢")
+    elif progress_pct < 0.8:
+        c_bud2.warning("Sắp hết rồi! 🟡")
+    else:
+        c_bud2.error("Báo động đỏ! 🔴")
+
+    st.divider()
+    
     col_input, col_report = st.columns([1, 1])
     
     with col_input:
-        st.write("### 📝 Ghi chép thu chi")
+        st.write("### 📝 Ghi sổ nhanh")
         if not accounts:
-            st.warning("Bạn cần tạo ví tiền trước khi ghi sổ!")
+            st.warning("Vui lòng tạo ví bên cạnh trước!")
         else:
             with st.form("trans_form", clear_on_submit=True):
-                acc_choice = st.selectbox("Chọn ví", options=[a['name'] for a in accounts])
-                t_type = st.radio("Loại giao dịch", ["Chi tiêu (-)", "Thu nhập (+)"], horizontal=True)
-                cats = ["Ăn uống", "Học tập", "Đi lại", "Giải trí", "Khác"] if t_type == "Chi tiêu (-)" else ["Tiền tiêu vặt", "Làm thêm", "Khác"]
-                category = st.selectbox("Phân loại", options=cats)
+                # Thêm option Chuyển ví
+                t_type = st.radio("Loại giao dịch", ["Chi tiêu (-)", "Thu nhập (+)", "Chuyển ví (↔)"], horizontal=True)
+                
+                # Giao diện thay đổi động dựa trên loại giao dịch
+                if t_type == "Chuyển ví (↔)":
+                    c_from, c_to = st.columns(2)
+                    acc_from = c_from.selectbox("Từ ví", options=[a['name'] for a in accounts], key="from")
+                    acc_to = c_to.selectbox("Sang ví", options=[a['name'] for a in accounts], key="to")
+                    category = "Chuyển tiền nội bộ"
+                else:
+                    acc_choice = st.selectbox("Chọn ví", options=[a['name'] for a in accounts])
+                    cats = ["Ăn uống", "Học tập", "Đi lại", "Giải trí", "Khác"] if t_type == "Chi tiêu (-)" else ["Tiêu vặt", "Làm thêm", "Khác"]
+                    category = st.selectbox("Phân loại", options=cats)
+                
                 amount = st.number_input("Số tiền", min_value=0, step=1000)
                 note = st.text_input("Ghi chú")
                 
-                if st.form_submit_button("Lưu vào sổ"):
-                    selected_acc = next(a for a in accounts if a['name'] == acc_choice)
-                    final_amt = -amount if t_type == "Chi tiêu (-)" else amount
-                    supabase.table("accounts").update({"balance": float(selected_acc['balance']) + final_amt}).eq("id", selected_acc['id']).execute()
-                    supabase.table("transactions").insert({
-                        "user_id": USER_ID, "account_id": selected_acc['id'], 
-                        "amount": amount, "transaction_type": "expense" if t_type == "Chi tiêu (-)" else "income",
-                        "category": category, "description": note
-                    }).execute()
-                    st.rerun()
+                if st.form_submit_button("Lưu giao dịch") and amount > 0:
+                    if t_type == "Chuyển ví (↔)":
+                        if acc_from == acc_to:
+                            st.error("Trùng ví rồi ông ơi!")
+                        else:
+                            id_from = next(a['id'] for a in accounts if a['name'] == acc_from)
+                            id_to = next(a['id'] for a in accounts if a['name'] == acc_to)
+                            bal_from = float(next(a['balance'] for a in accounts if a['name'] == acc_from))
+                            bal_to = float(next(a['balance'] for a in accounts if a['name'] == acc_to))
+                            
+                            # Cập nhật 2 ví
+                            supabase.table("accounts").update({"balance": bal_from - amount}).eq("id", id_from).execute()
+                            supabase.table("accounts").update({"balance": bal_to + amount}).eq("id", id_to).execute()
+                            # Ghi log
+                            supabase.table("transactions").insert([
+                                {"user_id": USER_ID, "account_id": id_from, "amount": amount, "transaction_type": "expense", "category": "Chuyển đi", "description": f"Chuyển sang {acc_to}"},
+                                {"user_id": USER_ID, "account_id": id_to, "amount": amount, "transaction_type": "income", "category": "Nhận tiền", "description": f"Nhận từ {acc_from}"}
+                            ]).execute()
+                            st.rerun()
+                    else:
+                        selected_acc = next(a for a in accounts if a['name'] == acc_choice)
+                        final_amt = -amount if t_type == "Chi tiêu (-)" else amount
+                        supabase.table("accounts").update({"balance": float(selected_acc['balance']) + final_amt}).eq("id", selected_acc['id']).execute()
+                        supabase.table("transactions").insert({
+                            "user_id": USER_ID, "account_id": selected_acc['id'], 
+                            "amount": amount, "transaction_type": "expense" if t_type == "Chi tiêu (-)" else "income",
+                            "category": category, "description": note
+                        }).execute()
+                        st.rerun()
 
     with col_report:
         st.write("### 🏦 Quản lý Ví tiền")
-        with st.expander("🆕 Tạo ví mới", expanded=not bool(accounts)):
+        with st.expander("🆕 Tạo/Chỉnh sửa ví", expanded=not bool(accounts)):
             with st.form("new_wallet", clear_on_submit=True):
-                new_acc_name = st.text_input("Tên ví (VD: Ví da, Momo)")
-                init_bal = st.number_input("Số dư ban đầu", min_value=0, step=1000)
-                if st.form_submit_button("Tạo ví") and new_acc_name:
-                    supabase.table("accounts").insert({"user_id": USER_ID, "name": new_acc_name, "balance": init_bal}).execute()
+                new_acc_name = st.text_input("Tên ví (VD: Tiền mặt, BIDV)")
+                init_bal = st.number_input("Số dư", min_value=0, step=1000)
+                if st.form_submit_button("Tạo/Cập nhật ví") and new_acc_name:
+                    # Logic update nếu trùng tên, tạo mới nếu chưa có
+                    existing = next((a for a in accounts if a['name'] == new_acc_name), None)
+                    if existing:
+                        supabase.table("accounts").update({"balance": init_bal}).eq("id", existing['id']).execute()
+                    else:
+                        supabase.table("accounts").insert({"user_id": USER_ID, "name": new_acc_name, "balance": init_bal}).execute()
                     st.rerun()
                     
         if accounts:
             for acc in accounts:
                 c1, c2 = st.columns([3, 1])
                 c1.write(f"**{acc['name']}**: {acc['balance']:,} VNĐ")
-                if c2.button("Xóa ví", key=f"del_acc_{acc['id']}"):
+                if c2.button("Xóa", key=f"del_acc_{acc['id']}"):
                     supabase.table("accounts").delete().eq("id", acc['id']).execute()
                     st.rerun()
 
