@@ -20,58 +20,79 @@ INCOME_CATS = ["Thưởng Habit", "Bố mẹ chu cấp", "Làm thêm", "Khác"]
 tab_habit, tab_finance = st.tabs(["✅ Habit Manager", "💰 Finance Manager"])
 
 # --- [Giữ nguyên Tab Habit Manager từ bản trước] ---
+# ==========================================
+# TAB 1: HABIT MANAGER
+# ==========================================
 with tab_habit:
-    # (Phần code Habit Manager không thay đổi)
     st.subheader("Lộ trình Kỷ luật")
+    
+    # 1. FORM THÊM THÓI QUEN MỚI
+    with st.expander("➕ Thêm thói quen mới", expanded=True): # Mở sẵn
+        with st.form("new_habit", clear_on_submit=True):
+            c1, c2 = st.columns([3, 1])
+            name = c1.text_input("Tên thói quen (VD: Giải bài tập Giải tích II)")
+            reward = c2.number_input("Thưởng (VNĐ)", min_value=0, step=1000)
+            if st.form_submit_button("Lưu thói quen"):
+                if name:
+                    supabase.table("habits").insert({"user_id": USER_ID, "name": name, "incentive_amount": reward}).execute()
+                    st.rerun()
+                else:
+                    st.warning("Ông phải nhập tên thói quen chứ!")
+
+    # 2. DANH SÁCH CHECKLIST
     habits = supabase.table("habits").select("*").eq("user_id", USER_ID).execute().data
-    for h in habits:
-        col1, col2, col3 = st.columns([4, 2, 1])
-        col1.write(f"**{h['name']}** (+{h['incentive_amount']:,}đ)")
-        if col2.button("Xong", key=f"done_{h['id']}"):
-            supabase.table("habit_logs").insert({"habit_id": h['id'], "status": "done"}).execute()
-            st.rerun()
-        if col3.button("🗑️", key=f"del_{h['id']}"):
-            supabase.table("habits").delete().eq("id", h['id']).execute()
-            st.rerun()
+    if not habits:
+        st.info("Chưa có thói quen nào. Hãy thêm ở form phía trên nhé!")
+    else:
+        for h in habits:
+            col1, col2, col3 = st.columns([4, 2, 1])
+            col1.write(f"**{h['name']}** (+{h['incentive_amount']:,}đ)")
+            
+            if col2.button("Xong", key=f"done_{h['id']}"):
+                # Kiểm tra xem hôm nay đã log chưa để tránh lỗi ấn 2 lần
+                res = supabase.table("habit_logs").select("*").eq("habit_id", h['id']).eq("log_date", pd.Timestamp.now().date()).execute()
+                if not res.data:
+                    supabase.table("habit_logs").insert({"habit_id": h['id'], "status": "done"}).execute()
+                    st.toast(f"Tốt lắm! Đã cộng thưởng cho {h['name']}")
+                    st.rerun()
+                else:
+                    st.warning("Hôm nay ông đã làm thói quen này rồi!")
+
+            if col3.button("🗑️", key=f"del_{h['id']}"):
+                supabase.table("habits").delete().eq("id", h['id']).execute()
+                st.rerun()
 
 # ==========================================
 # TAB 2: FINANCE MANAGER (Nâng cấp Phân loại)
 # ==========================================
-with tab_finance:
-    accounts = supabase.table("accounts").select("*").eq("user_id", USER_ID).execute().data
-    
-    # 1. Dashboard nhanh
-    total_assets = sum([a['balance'] for a in accounts])
-    st.metric("Tổng tài sản thực tế", f"{total_assets:,.0f} VNĐ")
-    
-    col_input, col_report = st.columns([1, 1])
-    
-    with col_input:
-        st.write("### 📝 Ghi chép chi tiêu")
-        with st.form("pro_trans_form", clear_on_submit=True):
-            acc_choice = st.selectbox("Chọn ví", options=[a['name'] for a in accounts])
-            t_type = st.radio("Loại giao dịch", ["Chi tiêu (-)", "Thu nhập (+)"], horizontal=True)
-            
-            # Tự động đổi danh mục dựa trên loại giao dịch
-            cats = EXPENSE_CATS if t_type == "Chi tiêu (-)" else INCOME_CATS
-            category = st.selectbox("Phân loại", options=cats)
-            
-            amount = st.number_input("Số tiền", min_value=0, step=1000)
-            note = st.text_input("Ghi chú (Ví dụ: Ăn trưa Canteen C9)")
-            
-            if st.form_submit_button("Lưu vào sổ"):
-                selected_acc = next(a for a in accounts if a['name'] == acc_choice)
-                final_amt = -amount if t_type == "Chi tiêu (-)" else amount
+# 2. Quản lý & Thêm ví tiền
+    # Nếu chưa có ví nào (empty list), tự động mở tung expander này ra
+    with st.expander("🏦 Quản lý & Thêm ví tiền", expanded=not bool(accounts)):
+        
+        # Form tạo ví mới
+        st.markdown("**🆕 Tạo ví mới**")
+        with st.form("new_wallet", clear_on_submit=True):
+            col_w1, col_w2, col_w3 = st.columns([2, 2, 1])
+            new_acc_name = col_w1.text_input("Tên ví (VD: Tiền mặt, BIDV)")
+            init_bal = col_w2.number_input("Số dư ban đầu", min_value=0, step=1000)
+            if col_w3.form_submit_button("Tạo ví"):
+                if new_acc_name:
+                    supabase.table("accounts").insert({"user_id": USER_ID, "name": new_acc_name, "balance": init_bal}).execute()
+                    st.rerun()
                 
-                # Cập nhật DB
-                supabase.table("accounts").update({"balance": float(selected_acc['balance']) + final_amt}).eq("id", selected_acc['id']).execute()
-                supabase.table("transactions").insert({
-                    "user_id": USER_ID, "account_id": selected_acc['id'], 
-                    "amount": amount, "transaction_type": "expense" if t_type == "Chi tiêu (-)" else "income",
-                    "category": category, "description": note
-                }).execute()
-                st.success("Đã ghi nhận!")
-                st.rerun()
+        st.divider()
+        
+        # Danh sách ví hiện tại
+        st.markdown("**💳 Ví hiện tại của ông**")
+        if not accounts:
+            st.info("Ông chưa có ví nào. Hãy tạo một cái ở trên để bắt đầu ghi chép nhé.")
+        else:
+            for acc in accounts:
+                c1, c2 = st.columns([3, 1])
+                c1.write(f"**{acc['name']}**: {acc['balance']:,} VNĐ")
+                if c2.button("Xóa ví", key=f"del_acc_{acc['id']}"):
+                    supabase.table("accounts").delete().eq("id", acc['id']).execute()
+                    st.rerun()
 
     with col_report:
         st.write("### 📊 Phân tích chi tiêu tháng này")
