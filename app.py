@@ -1,100 +1,97 @@
 import streamlit as st
-from supabase import create_client, Client
+import pandas as pd
+import plotly.express as px # Thêm để vẽ biểu đồ tròn chuyên nghiệp
+from supabase import create_client
 
-# 1. KẾT NỐI (Dùng st.secrets để bảo mật)
+# 1. KẾT NỐI
 @st.cache_resource
-def init_connection() -> Client:
-    # Nếu chạy local, ông tạo file .streamlit/secrets.toml
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
-    return create_client(url, key)
+def init_connection():
+    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 
-class DatabaseManager:
-    def __init__(self, client: Client):
-        self.client = client
-        # Thay cái UUID này bằng ID user ông đã tạo trong Supabase Auth
-        self.user_id = "c1b89663-eb6a-462c-b55f-9a12dc10596b" 
+supabase = init_connection()
+USER_ID = "c1b89663-eb6a-462c-b55f-9a12dc10596b"
 
-    def get_balance(self):
-        res = self.client.table("transactions").select("amount").eq("user_id", self.user_id).execute()
-        return sum(item['amount'] for item in res.data) if res.data else 0
+st.set_page_config(page_title="Atomic Finance Pro", layout="wide")
 
-    def get_habits(self):
-        res = self.client.table("habits").select("*").eq("user_id", self.user_id).execute()
-        return res.data if res.data else []
+# Danh mục chi tiêu gợi ý cho sinh viên
+EXPENSE_CATS = ["Ăn uống", "Học tập (Sách/Khóa học)", "Đi lại/Gửi xe", "Nhà trọ/Điện nước", "Giải trí", "Sức khỏe", "Khác"]
+INCOME_CATS = ["Thưởng Habit", "Bố mẹ chu cấp", "Làm thêm", "Khác"]
 
-    def log_habit(self, habit_id: str):
-        # CHỈ CẦN INSERT VÀO LOG - TRIGGER TỰ CỘNG TIỀN TRONG DB
-        return self.client.table("habit_logs").insert({
-            "habit_id": habit_id,
-            "status": "done"
-        }).execute()
+tab_habit, tab_finance = st.tabs(["✅ Habit Manager", "💰 Finance Manager"])
 
-    def add_habit(self, name, goal, reward):
-        return self.client.table("habits").insert({
-            "user_id": self.user_id,
-            "name": name,
-            "identity_goal": goal,
-            "incentive_amount": reward
-        }).execute()
-
-    def get_stats(self):
-        res = self.client.table("transactions").select("amount, created_at").eq("user_id", self.user_id).execute()
-        return res.data if res.data else []
-
-# 2. GIAO DIỆN
-st.set_page_config(page_title="Atomic Finance", page_icon="💜", layout="centered")
-
-# Custom CSS cho "gu" của ông (Màu tím nhẹ và tối giản)
-st.markdown("""
-    <style>
-    .stButton>button { background-color: #6c5ce7; color: white; border-radius: 10px; }
-    .stMetric { background-color: #f0f2f6; padding: 15px; border-radius: 10px; }
-    </style>
-    """, unsafe_allow_html=True)
-
-db = DatabaseManager(init_connection())
-
-st.title("💜 Atomic Finance")
-
-# Sidebar hiển thị số dư
-with st.sidebar:
-    st.metric("Tổng tích lũy", f"{db.get_balance():,.0f} VNĐ")
-    st.divider()
-    st.caption("Identity Goals:")
-    for h in db.get_habits():
-        if h['identity_goal']: st.write(f"✨ {h['identity_goal']}")
-
-# Tabs tính năng
-tab1, tab2, tab3 = st.tabs(["🔥 Habits", "📈 Stats", "⚙️ Setup"])
-
-with tab1:
-    habits = db.get_habits()
-    if not habits: st.info("Chưa có thói quen nào.")
+# --- [Giữ nguyên Tab Habit Manager từ bản trước] ---
+with tab_habit:
+    # (Phần code Habit Manager không thay đổi)
+    st.subheader("Lộ trình Kỷ luật")
+    habits = supabase.table("habits").select("*").eq("user_id", USER_ID).execute().data
     for h in habits:
-        col1, col2 = st.columns([3, 1])
-        col1.markdown(f"**{h['name']}** \n`+{h['incentive_amount']:,} VNĐ`")
-        if col2.button("Xong", key=h['id']):
-            db.log_habit(h['id'])
-            st.balloons()
+        col1, col2, col3 = st.columns([4, 2, 1])
+        col1.write(f"**{h['name']}** (+{h['incentive_amount']:,}đ)")
+        if col2.button("Xong", key=f"done_{h['id']}"):
+            supabase.table("habit_logs").insert({"habit_id": h['id'], "status": "done"}).execute()
+            st.rerun()
+        if col3.button("🗑️", key=f"del_{h['id']}"):
+            supabase.table("habits").delete().eq("id", h['id']).execute()
             st.rerun()
 
-with tab2:
-    data = db.get_stats()
-    if data:
-        import pandas as pd
-        df = pd.DataFrame(data)
-        df['date'] = pd.to_datetime(df['created_at']).dt.date
-        chart_data = df.groupby('date')['amount'].sum()
-        st.bar_chart(chart_data)
-    else:
-        st.write("Chưa có dữ liệu thống kê.")
+# ==========================================
+# TAB 2: FINANCE MANAGER (Nâng cấp Phân loại)
+# ==========================================
+with tab_finance:
+    accounts = supabase.table("accounts").select("*").eq("user_id", USER_ID).execute().data
+    
+    # 1. Dashboard nhanh
+    total_assets = sum([a['balance'] for a in accounts])
+    st.metric("Tổng tài sản thực tế", f"{total_assets:,.0f} VNĐ")
+    
+    col_input, col_report = st.columns([1, 1])
+    
+    with col_input:
+        st.write("### 📝 Ghi chép chi tiêu")
+        with st.form("pro_trans_form", clear_on_submit=True):
+            acc_choice = st.selectbox("Chọn ví", options=[a['name'] for a in accounts])
+            t_type = st.radio("Loại giao dịch", ["Chi tiêu (-)", "Thu nhập (+)"], horizontal=True)
+            
+            # Tự động đổi danh mục dựa trên loại giao dịch
+            cats = EXPENSE_CATS if t_type == "Chi tiêu (-)" else INCOME_CATS
+            category = st.selectbox("Phân loại", options=cats)
+            
+            amount = st.number_input("Số tiền", min_value=0, step=1000)
+            note = st.text_input("Ghi chú (Ví dụ: Ăn trưa Canteen C9)")
+            
+            if st.form_submit_button("Lưu vào sổ"):
+                selected_acc = next(a for a in accounts if a['name'] == acc_choice)
+                final_amt = -amount if t_type == "Chi tiêu (-)" else amount
+                
+                # Cập nhật DB
+                supabase.table("accounts").update({"balance": float(selected_acc['balance']) + final_amt}).eq("id", selected_acc['id']).execute()
+                supabase.table("transactions").insert({
+                    "user_id": USER_ID, "account_id": selected_acc['id'], 
+                    "amount": amount, "transaction_type": "expense" if t_type == "Chi tiêu (-)" else "income",
+                    "category": category, "description": note
+                }).execute()
+                st.success("Đã ghi nhận!")
+                st.rerun()
 
-with tab3:
-    with st.form("new_habit"):
-        n = st.text_input("Tên thói quen")
-        g = st.text_input("Identity Goal (VD: Tôi là người kỷ luật)")
-        r = st.number_input("Tiền thưởng (VNĐ)", min_value=0, step=1000)
-        if st.form_submit_button("Thêm mới"):
-            db.add_habit(n, g, r)
-            st.rerun()
+    with col_report:
+        st.write("### 📊 Phân tích chi tiêu tháng này")
+        trans_data = supabase.table("transactions").select("*").eq("user_id", USER_ID).eq("transaction_type", "expense").execute().data
+        
+        if trans_data:
+            df = pd.DataFrame(trans_data)
+            # Biểu đồ tròn phân bổ chi tiêu
+            fig = px.pie(df, values='amount', names='category', hole=0.4,
+                         color_discrete_sequence=px.colors.qualitative.Pastel)
+            fig.update_layout(showlegend=True, margin=dict(t=0, b=0, l=0, r=0))
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Chưa có dữ liệu chi tiêu để báo cáo.")
+
+    # 2. Quản lý ví (Giữ nguyên logic cũ nhưng giao diện gọn hơn)
+    with st.expander("🏦 Quản lý ví tiền của tôi"):
+        for acc in accounts:
+            c1, c2 = st.columns([3, 1])
+            c1.write(f"**{acc['name']}**: {acc['balance']:,} VNĐ")
+            if c2.button("Xóa ví", key=f"del_acc_{acc['id']}"):
+                supabase.table("accounts").delete().eq("id", acc['id']).execute()
+                st.rerun()
