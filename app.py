@@ -89,14 +89,13 @@ with tab_habit:
 # ==========================================
 # TAB 2: FINANCE MANAGER
 # ==========================================
-# ==========================================
-# TAB 2: FINANCE MANAGER (Nâng cấp)
-# ==========================================
 with tab_finance:
     accounts = supabase.table("accounts").select("*").eq("user_id", USER_ID).execute().data
     
     # --- THANH NGÂN SÁCH (BUDGET BAR) ---
+# --- THANH NGÂN SÁCH (BUDGET BAR) ---
     st.write("### 🎯 Ngân sách tháng này")
+    
     # Lấy ngân sách từ settings
     settings = supabase.table("user_settings").select("monthly_budget").eq("user_id", USER_ID).execute().data
     budget = float(settings[0]['monthly_budget']) if settings else 3000000.0
@@ -107,9 +106,16 @@ with tab_finance:
         .eq("user_id", USER_ID).eq("transaction_type", "expense").gte("created_at", current_month).execute().data
     
     total_spent = sum([e['amount'] for e in expenses_this_month]) if expenses_this_month else 0
-    
-    # Vẽ thanh tiến trình
-    progress_pct = min(total_spent / budget, 1.0)
+    # Tính tổng chi tiêu tháng hiện tại (ĐÃ LOẠI TRỪ CHUYỂN VÍ)
+    current_month = datetime.now().strftime("%Y-%m-01")
+    expenses_this_month = supabase.table("transactions").select("amount")\
+        .eq("user_id", USER_ID)\
+        .eq("transaction_type", "expense")\
+        .neq("category", "Chuyển đi")\
+        .gte("created_at", current_month)\
+        .execute().data
+    # Vẽ thanh tiến trình (Tránh lỗi chia cho 0 nếu ông set ngân sách = 0)
+    progress_pct = min(total_spent / budget, 1.0) if budget > 0 else 1.0
     
     c_bud1, c_bud2 = st.columns([3, 1])
     c_bud1.progress(progress_pct, text=f"Đã tiêu: {total_spent:,.0f} / {budget:,.0f} VNĐ")
@@ -120,6 +126,16 @@ with tab_finance:
         c_bud2.warning("Sắp hết rồi! 🟡")
     else:
         c_bud2.error("Báo động đỏ! 🔴")
+
+    # TÍNH NĂNG MỚI: Chỉnh sửa mục tiêu
+    with st.expander("⚙️ Điều chỉnh ngân sách mục tiêu"):
+        with st.form("budget_form", clear_on_submit=False):
+            col_b1, col_b2 = st.columns([3, 1])
+            new_budget = col_b1.number_input("Ngân sách mong muốn (VNĐ)", min_value=0, step=100000, value=int(budget))
+            if col_b2.form_submit_button("Cập nhật"):
+                # Cập nhật thẳng vào Database
+                supabase.table("user_settings").update({"monthly_budget": new_budget}).eq("user_id", USER_ID).execute()
+                st.rerun()
 
     st.divider()
     
